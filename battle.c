@@ -56,7 +56,7 @@ int main(int argc, char **argv[])
         bzero((char *) &serv_addr, sizeof(serv_addr));
 
         // get port number to connect to the player
-        portno = atoi(argv[1]);
+        portno = atoi((*argv)[1]);
 
         serv_addr.sin_family = AF_INET; // should always be set to AF_INET
 
