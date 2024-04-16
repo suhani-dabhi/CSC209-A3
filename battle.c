@@ -1,96 +1,257 @@
+/*
+ * socket demonstrations:
+ * This is the server side of an "internet domain" socket connection, for
+ * communicating over the network.
+ *
+ * In this case we are willing to wait for chatter from the client
+ * _or_ for a new connection.
+*/
+
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include <sys/types.h>
 #include <sys/socket.h>
-#include <errno.h>
-#include <arpa/inet.h>     /* inet_ntoa */
-#include <netdb.h>         /* gethostname */
-#include <netinet/in.h>    /* struct sockaddr_in */
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
-#define MAX_PLAYERS 100
-#define MAX_NAME_LEN  51
+#ifndef PORT
+    #define PORT 5962
+#endif
 
-void addnames(char names[][MAX_NAME_LEN], int *curr_num_players, const char *name) {
+# define SECONDS 10
 
-                if ((*curr_num_players) < MAX_PLAYERS) {
-                        strcpy(names[*curr_num_players], name);
-                        (*curr_num_players)++;
-                        printf("Joined successfully!\n");
+struct client {
+    int fd;
+    struct in_addr ipaddr;
+    struct client *next;
+    char name[100];   // keep the client's name
+    int in_game;      // 0 if waiting for a game, 1 if in a game
+};
+
+
+static struct client *addclient(struct client *top, int fd, struct in_addr addr, char *name);
+
+static struct client *removeclient(struct client *top, int fd);
+
+static void broadcast(struct client *top, char *s, int size);
+
+int handleclient(struct client *p, struct client *top);
+
+void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds);
+
+int bindandlisten(void);
+
+int main(void) {
+    int clientfd, maxfd, nready;
+    struct client *p;
+    struct client *head = NULL;
+    socklen_t len;
+    struct sockaddr_in q;
+    struct timeval tv;
+    fd_set allset;
+    fd_set rset;
+
+    int listenfd = bindandlisten();
+    // initialize allset and add listenfd to the
+    // set of file descriptors passed into select
+    FD_ZERO(&allset);
+    FD_SET(listenfd, &allset);
+    maxfd = listenfd;
+
+    while (1) {
+    // make a copy of the set before we pass it into select
+        rset = allset;
+        tv.tv_sec = SECONDS;
+        tv.tv_usec = 0;
+
+        nready = select(maxfd + 1, &rset, NULL, NULL, &tv);
+        if (nready == 0) {
+            printf("No response from clients in %d seconds\n", SECONDS);
+            continue;
+        }
+
+        if (nready == -1) {
+            perror("select");
+            continue;
+        }
+
+        // adding a new client connection
+        if (FD_ISSET(listenfd, &rset)) {
+                handle_new_connection(listenfd, &head, &allset);
+            }
+
+        // data from other clients
+        for (int i = 0; i <= maxfd; i++) {
+            if (FD_ISSET(i,  &rset) && i != listenfd) {
+                p = head;
+                while (p != NULL && p->fd != i) {
+                    p = p->next;
                 }
-                else{
-                        printf("Maximum number of players have joined. Try again later :(");
+                if (p == NULL) {
+                    continue; // no client found with fd i so continue
                 }
-
-
+                int result = handleclient(p, head);
+                if (result == -1) {
+                    int tmp_fd = p->fd;
+                    head = removeclient(head, p->fd);
+                    FD_CLR(tmp_fd, &allset);
+                    close(tmp_fd);
+                    printf("%s has left the game.\n", p->name);
+                }
+            }
+        }
+    }
+    return 0;
 }
 
-void error(char *msg) {
-        perror(msg);
-        exit(0);
+int handleclient(struct client *p, struct client *top) {
+    char buf[256];
+    char outbuf[512];
+    int len = read(p->fd, buf, sizeof(buf) - 1);
+    if (len > 0) {
+        buf[len] = '\0';
+        printf("Received %d bytes: %s", len, buf);
+        sprintf(outbuf, "%s says: %s", inet_ntoa(p->ipaddr), buf);
+        broadcast(top, outbuf, strlen(outbuf));
+        return 0;
+    } else if (len <= 0) {
+        // socket is closed
+        printf("Disconnect from %s\n", inet_ntoa(p->ipaddr));
+        sprintf(outbuf, "Goodbye %s\r\n", inet_ntoa(p->ipaddr));
+        broadcast(top, outbuf, strlen(outbuf));
+        return -1;
+    }
+    return -1;
 }
-int main(int argc, char **argv[])
-{
-        char playernames[MAX_PLAYERS][MAX_NAME_LEN];
-        char name[MAX_NAME_LEN];
-        int curr_num_players = 0;
-        int sockfd, newsockfd, portno, clilen, n;
-        char buffer[256]; // this buffer will store everything that will appear on the stdout
-        struct sockaddr_in serv_addr, cli_addr;
 
-        if (argc < 2)
-                error("Error: no port provided");
+ /* bind and listen, abort on error
+  * returns FD of listening socket
+  */
+int bindandlisten(void) {
+    struct sockaddr_in r;
+    int listenfd;
 
-        // creating a socket between the player and server
+    if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("socket");
+        exit(1);
+    }
+    int yes = 1;
+    if ((setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int))) == -1) {
+        perror("setsockopt");
+    }
+    memset(&r, '\0', sizeof(r));
+    r.sin_family = AF_INET;
+    r.sin_addr.s_addr = INADDR_ANY;
+    r.sin_port = htons(PORT);
 
-        // AF_INET -> Internet Domain
-        // SOCK_STREAM -> type of socket
-        // 0 - system chooses the most appropriate protocol - TCP or UDP depending on
-        sockfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (sockfd < 0) // trouble creating a socket
-                error("Error opening socket");
+    if (bind(listenfd, (struct sockaddr *)&r, sizeof r)) {
+        perror("bind");
+        exit(1);
+    }
 
-        // at this point, socket created,
-        // free up buffer by using bzero to initialize it
-        //
-        bzero((char *) &serv_addr, sizeof(serv_addr));
+    if (listen(listenfd, 5)) {
+        perror("listen");
+        exit(1);
+    }
+    return listenfd;
+}
 
-        // get port number to connect to the player
-        portno = atoi((*argv)[1]);
+static struct client *addclient(struct client *top, int fd, struct in_addr addr, char *name) {
+    struct client *p = malloc(sizeof(struct client));
+    if (!p) {
+        perror("malloc");
+        exit(1);
+    }
 
-        serv_addr.sin_family = AF_INET; // should always be set to AF_INET
+    // init the client structure
+    p->fd = fd;
+    p->ipaddr = addr;
+    p->in_game = 0;
+    strncpy(p->name, name, sizeof(p->name));  // copy the name provided as  parameter
+    p->name[sizeof(p->name) - 1] = '\0';
 
-        // server address
-        serv_addr.sin_port = htons(portno); // converts int to network byte order
+    // add to the front of the list
+    p->next = top;
+    top = p;
 
-        // The Ip address of localhost
+    printf("Added client %s\n", p->name);
+    return top;
+}
 
-        serv_addr.sin_addr.s_addr = INADDR_ANY;
+static struct client *removeclient(struct client *top, int fd) {
+    struct client **p;
 
-        // Finally binding the socket to an address to send message
-
-        if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-                error("Error in binding");
-
-        // socket has been bound - listen for any new connections:
-        listen(sockfd, 5); // second parameter: # of connections that can be waiting when process if handling a connection
-
-        clilen = sizeof(cli_addr);
-        newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
-
-        if (newsockfd < 0)
-                error("Error in accepting the connection");
-
-
-        printf("Name: ");
-        fgets(name, 51, stdin);
-        // name contains the name of the player
-
-        addnames(playernames, &curr_num_players, name);
-        // at this point, the names list is created and contains names of players
-
-        bzero(buffer, 256); // initializing the buffer
+    for (p = &top; *p && (*p)->fd != fd; p = &(*p)->next)
+        ;
+    // Now, p points to (1) top, or (2) a pointer to another client
+    // This avoids a special case for removing the head of the list
+    if (*p) {
+        struct client *t = (*p)->next;
+        printf("Removing client %d %s\n", fd, inet_ntoa((*p)->ipaddr));
+        free(*p);
+        *p = t;
+    } else {
+        fprintf(stderr, "Trying to remove fd %d, but I don't know about it\n",
+                 fd);
+    }
+    return top;
+}
 
 
+// broadcast to everyone but new client
+void broadcast_except(struct client *client_list, char *msg, int except_fd) {
+    struct client *tmp = client_list;
+    while (tmp != NULL) {
+        if (tmp->fd != except_fd) {  // exclude the new client
+            send(tmp->fd, msg, strlen(msg), 0);
+        }
+        tmp = tmp->next;
+    }
+}
 
+void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds) {
+    struct sockaddr_in cli_addr;
+    socklen_t addrlen = sizeof(cli_addr);
+    int clientfd = accept(listenfd, (struct sockaddr *)&cli_addr, &addrlen);
+    if (clientfd < 0) {
+        perror("Server: accept failed");
+        return;
+    }
+
+    char welcome_msg[] = "Enter your name: ";
+    send(clientfd, welcome_msg, sizeof(welcome_msg), 0);
+
+    char client_name[100];
+    int name_len = read(clientfd, client_name, sizeof(client_name) - 1);
+    if (name_len > 0) {
+        client_name[name_len - 1] = '\0';
+    } else {
+        printf("Failed to read name from client.\n");
+        close(clientfd);
+        return;
+    }
+
+    // now adding the client using addclient
+    *head = addclient(*head, clientfd, cli_addr.sin_addr, client_name);
+    FD_SET(clientfd, all_fds);
+
+    // msg to user who joins
+    char *wait_msg = "Welcome! You are now awaiting an opponent.\n";
+    send(clientfd, wait_msg, strlen(wait_msg), 0);
+
+    // msg to everyone else notifying someone new joined
+    char broadcast_msg[200];
+    sprintf(broadcast_msg, "%s has entered the arena.\n", client_name);
+    broadcast_except(*head, broadcast_msg, clientfd);
+}
+
+static void broadcast(struct client *top, char *s, int size) {
+    struct client *p;
+    for (p = top; p; p = p->next) {
+        write(p->fd, s, size);
+    }
+    /* should probably check write() return value and perhaps remove client */
 }
