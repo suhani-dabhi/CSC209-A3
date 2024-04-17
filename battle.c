@@ -29,6 +29,7 @@ struct client {
     struct client *next;
     char name[100];   // keep the client's name
     int in_game;      // 0 if waiting for a game, 1 if in a game
+    struct client *last_opponent; // pointer to their last opponent
 };
 
 
@@ -39,10 +40,46 @@ static struct client *removeclient(struct client *top, int fd);
 static void broadcast(struct client *top, char *s, int size);
 
 int handleclient(struct client *p, struct client *top);
-
+static void broadcast_except(struct client *client_list, char *msg, int except_fd);
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds);
+void attempt_matchmaking(struct client **head);
 
 int bindandlisten(void);
+
+void attempt_matchmaking(struct client **head) {
+    struct client *p, *q;
+
+    for (p = *head; p != NULL; p = p->next) {
+        if (!p->in_game && (p->last_opponent == NULL || (q != p->last_opponent && q->last_opponent != p))) {
+            for (q = *head; q != NULL; q = q->next) {
+                if (!q->in_game && q != p && p->last_opponent != q && q->last_opponent != p) {
+                    // init the  match
+                    p->in_game = 1;
+                    q->in_game = 1;
+                    q->last_opponent = p;
+                    p->last_opponent = q;
+                    send(p->fd, "match found! You are now playing against ", 44, 0);
+                    send(p->fd, q->name, strlen(q->name), 0);
+                    send(q->fd, "match found! You are now playing against ", 44, 0);
+                    send(q->fd, p->name, strlen(p->name), 0);
+                    break; // break the inner loop
+                }
+            }
+            if (p->in_game) break; // Break the outer loop if a match was found
+        }
+    }
+}
+
+// broadcast to everyone but new client
+void broadcast_except(struct client *client_list, char *msg, int except_fd) {
+    struct client *tmp = client_list;
+    while (tmp != NULL) {
+        if (tmp->fd != except_fd) {  // exclude the new client
+            send(tmp->fd, msg, strlen(msg), 0);
+        }
+        tmp = tmp->next;
+    }
+}
 
 int main(void) {
     int clientfd, maxfd, nready;
@@ -81,6 +118,7 @@ int main(void) {
         // adding a new client connection
         if (FD_ISSET(listenfd, &rset)) {
                 handle_new_connection(listenfd, &head, &allset);
+                attempt_matchmaking(&head);  // try to match clients after a new connection
             }
 
         // data from other clients
@@ -100,6 +138,7 @@ int main(void) {
                     FD_CLR(tmp_fd, &allset);
                     close(tmp_fd);
                     printf("%s has left the game.\n", p->name);
+                    attempt_matchmaking(&head);  // try to match clients after someone leaves
                 }
             }
         }
@@ -122,6 +161,14 @@ int handleclient(struct client *p, struct client *top) {
         printf("Disconnect from %s\n", inet_ntoa(p->ipaddr));
         sprintf(outbuf, "Goodbye %s\r\n", inet_ntoa(p->ipaddr));
         broadcast(top, outbuf, strlen(outbuf));
+
+        if (p->in_game) { // check if the client was in a game
+            p->in_game = 0; // mark client as no longer in a game
+            char message[512];
+            sprintf(message, "%s has finished their game and is now available.", p->name);
+            broadcast_except(top, message, p->fd);
+        }
+
         return -1;
     }
     return -1;
@@ -201,16 +248,7 @@ static struct client *removeclient(struct client *top, int fd) {
 }
 
 
-// broadcast to everyone but new client
-void broadcast_except(struct client *client_list, char *msg, int except_fd) {
-    struct client *tmp = client_list;
-    while (tmp != NULL) {
-        if (tmp->fd != except_fd) {  // exclude the new client
-            send(tmp->fd, msg, strlen(msg), 0);
-        }
-        tmp = tmp->next;
-    }
-}
+
 
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds) {
     struct sockaddr_in cli_addr;
@@ -247,6 +285,8 @@ void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds) 
     sprintf(broadcast_msg, "%s has entered the arena.\n", client_name);
     broadcast_except(*head, broadcast_msg, clientfd);
 }
+
+
 
 static void broadcast(struct client *top, char *s, int size) {
     struct client *p;
