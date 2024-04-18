@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <netinet/in.h>
+#include <time.h>
 #include <arpa/inet.h>
 
 #ifndef PORT
@@ -32,6 +33,7 @@ struct client {
     struct client *last_opponent; // pointer to their last opponent
     int hitpoints;
     int powermoves;
+    int turn; // 1 if their turn, 0 otherwise
 };
 
 
@@ -43,6 +45,7 @@ static void broadcast(struct client *top, char *s, int size);
 
 int handleclient(struct client *p, struct client *top);
 static void broadcast_except(struct client *client_list, char *msg, int except_fd);
+void powermove(struct client *p1, struct client *p2);
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds);
 void attempt_matchmaking(struct client **head);
 
@@ -274,7 +277,47 @@ static struct client *removeclient(struct client *top, int fd) {
     return top;
 }
 
+void powermove(struct client *p1, struct client *p2) {
+        char buffer[256];
+        int target = rand() % 2; // generates a random int btn 0 and 1
+        // if target = 0 -> did not hit the target
+        // target = 1 -> hit the target
 
+        srand(time(NULL));
+
+        if ((p1 -> powermoves) > 0) {
+                if (target) { // if miss = 1
+
+                    int p_deducted = ((rand() % 5) + 2)*3; // this chooses a random number between 2 and 6
+                                                                // multiplied by 3 to cause three times the attack
+
+                    p1->powermoves -= 1;
+                    p2->hitpoints -= p_deducted;
+
+                    sprintf(buffer, "You hit your opponent's target for %d points\n", p_deducted);
+                    write(p1->fd, buffer, strlen(buffer)); // writing to the p1's screen
+
+
+                    // possible bug check here?
+
+                    sprintf(buffer, "Your opponent hit you with a powermove. You lost %d points! \n", p_deducted);
+                    write(p2->fd, buffer, strlen(buffer));
+
+
+                }
+                else { // the powermove didn't hit the target
+                       p1->powermoves -= 1;
+                       sprintf(buffer, "Your powermove missed the opponent!\n");
+                       write(p1->fd, buffer, strlen(buffer));
+
+                       sprintf(buffer, "Your opponent missed you with their powermove!\n");
+                       write(p2->fd, buffer, strlen(buffer));
+                }
+                p1->turn = 0;
+                p2->turn = 1;
+
+                }
+}
 
 
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds) {
