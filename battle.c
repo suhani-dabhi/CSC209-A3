@@ -53,6 +53,7 @@ char get_move(struct client *current_player);
 void start_game(struct client *p1, struct client *p2);
 void send_status(struct client *player);
 
+void end_game(struct client *winner, struct client *loser);
 int bindandlisten(void);
 
 void attempt_matchmaking(struct client **head) {
@@ -110,11 +111,11 @@ void start_game(struct client *p1, struct client *p2) {
 
     // notify players that a game started
     char buffer[512];
-    snprintf(buffer, sizeof(buffer), "You engage %s!\nYour hitpoints: %d\nYour powermoves: %d\n",
+    snprintf(buffer, sizeof(buffer), "\nYou engage %s!\nYour hitpoints: %d\nYour powermoves: %d\n",
              p2->name, p1->hitpoints, p1->powermoves);
     send(p1->fd, buffer, strlen(buffer), 0);
 
-    snprintf(buffer, sizeof(buffer), "You engage %s!\nYour hitpoints: %d\nYour powermoves: %d\n",
+    snprintf(buffer, sizeof(buffer), "\nYou engage %s!\nYour hitpoints: %d\nYour powermoves: %d\n",
              p1->name, p2->hitpoints, p2->powermoves);
     send(p2->fd, buffer, strlen(buffer), 0);
 
@@ -123,36 +124,65 @@ void start_game(struct client *p1, struct client *p2) {
             struct client *current_player = p1->turn ? p1 : p2;
             struct client *opponent = p1->turn ? p2 : p1;
 
+            send_status(p1);
+            send_status(p2);
+
             // Prompt current player for their move
-            char move = get_move(current_player); // Implement get_move
+            char move = get_move(current_player);
 
             // If move is valid, execute it
             if (move == 'a') {
-                // attack
-                return;
+            attack(current_player, opponent);
 
             } else if (move == 'p') {
             powermove(current_player, opponent);
 
+
+            } else if (move == 'i') {
+            char move = get_move(current_player); // not tested yet
             }
             // check if the game ended or not
             if (opponent->hitpoints <= 0) {
-                //end_game(current_player, opponent);
-                break;
+                end_game(current_player, opponent);
             }
 
-            // Send status updates to both players
-            send_status(p1);
-            send_status(p2);
+
+
         }
 }
 
+void end_game(struct client *winner, struct client *loser) {
+    char end_msg_winner[256];
+    char end_msg_loser[256];
+
+    // Construct the end game message for the winner
+    snprintf(end_msg_winner, sizeof(end_msg_winner),
+             "\nThe match has ended. You have won!\n");
+
+    // Construct the end game message for the loser
+    snprintf(end_msg_loser, sizeof(end_msg_loser),
+             "\nThe match has ended. You have lost!\n");
+
+    // Send the end game message to the winner
+    if (send(winner->fd, end_msg_winner, strlen(end_msg_winner), 0) == -1) {
+        perror("send end game message to winner error");
+    }
+
+    // send the end game message to the loser
+    if (send(loser->fd, end_msg_loser, strlen(end_msg_loser), 0) == -1) {
+        perror("send end game message to loser error");
+    }
+
+    // mark both clients as not in game anymore
+    winner->in_game = 0;
+    loser->in_game = 0;
+}
 void send_status(struct client *player) {
     char status[256];
 
     // Construct the status message
     snprintf(status, sizeof(status),
-             "It's %s your turn!\nYour hitpoints: %d\nYour powermoves: %d\n",
+             "\nIt's %s your turn!\nYour hitpoints: %d\nYour powermoves: %d\n",
              (player->turn ? "" : "not"), // This adds "not" if it's not the player's turn.
              player->hitpoints,
              player->powermoves);
@@ -160,7 +190,7 @@ void send_status(struct client *player) {
     // Send the status message to the player
     if (send(player->fd, status, strlen(status), 0) == -1) {
         perror("send status error");
-        // Consider how you want to handle send errors
+
     }
 }
 
@@ -170,7 +200,7 @@ char get_move(struct client *current_player) {
     int len;
 
     // ask client for move
-    char *prompt = "(a)ttack\n(p)owermove\n(s)peak something\n";
+    char *prompt = "\n(a)ttack\n(p)owermove\n(s)peak something\n";
     send(current_player->fd, prompt, strlen(prompt), 0);
 
     // raed the move from the client
@@ -374,26 +404,26 @@ void powermove(struct client *p1, struct client *p2) {
                     p1->powermoves -= 1;
                     p2->hitpoints -= p_deducted;
 
-                    sprintf(buffer, "You hit your opponent's target for %d points\n", p_deducted);
+                    sprintf(buffer, "\nYou hit your opponent's target for %d points\n", p_deducted);
                     write(p1->fd, buffer, strlen(buffer)); // writing to the p1's screen
 
 
                     // possible bug check here?
 
-                    sprintf(buffer, "Your opponent hit you with a powermove. You lost %d points! \n", p_deducted);
+                    sprintf(buffer, "\nYour opponent hit you with a powermove. You lost %d points! \n", p_deducted);
                     write(p2->fd, buffer, strlen(buffer));
 
 
                 }
                 else { // the powermove didn't hit the target
                        p1->powermoves -= 1;
-                       sprintf(buffer, "Your powermove missed the opponent!\n");
+                       sprintf(buffer, "\nYour powermove missed the opponent!\n");
                        write(p1->fd, buffer, strlen(buffer));
 
-                       sprintf(buffer, "Your opponent missed you with their powermove!\n");
+                       sprintf(buffer, "\nYour opponent missed you with their powermove!\n");
                        write(p2->fd, buffer, strlen(buffer));
                 }
-                p1->turn = !p1->turn;
+                p1->turn =!p1->turn;
                 p2->turn = !p2->turn;
 
                 }
@@ -405,17 +435,14 @@ void attack(struct client *p1, struct client *p2) {
         srand(time(NULL));
         int power = (rand() % 5) + 2; // chooses a random number between 2 to 6
         p2->hitpoints -= power;
-        sprintf(buffer, "You hit your opponent with a damage of %d points \n", power);
+        sprintf(buffer, "\nYou hit your opponent with a damage of %d points \n", power);
         write(p1->fd, buffer, strlen(buffer));
 
-        sprintf(buffer, "Your opponent hit you with damage of %d points \n", power);
+        sprintf(buffer, "\nYour opponent hit you with damage of %d points \n", power);
         write(p2->fd, buffer, strlen(buffer));
 
-        p1->turn = !p1->turn;
+        p1->turn =!p1->turn;
         p2->turn = !p2->turn;
-
-
-
 }
 
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds) {
@@ -428,32 +455,36 @@ void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds) 
     }
 
     char welcome_msg[] = "Enter your name: ";
-    send(clientfd, welcome_msg, sizeof(welcome_msg), 0);
+    send(clientfd, welcome_msg, sizeof(welcome_msg) - 1, 0);  // Exclude null terminator from send
 
     char client_name[100];
-    int name_len = read(clientfd, client_name, sizeof(client_name) - 1);
-    if (name_len > 0) {
-        client_name[name_len - 1] = '\0';
-    } else {
+    memset(client_name, 0, sizeof(client_name));  // Clear the buffer
+    int name_len = 0;
+    char ch;
+    while (read(clientfd, &ch, 1) > 0 && ch != '\n' && name_len < sizeof(client_name) - 1) {
+        client_name[name_len++] = ch;
+    }
+    client_name[name_len] = '\0';  // Null-terminate the string
+
+    if (name_len <= 0) {
         printf("Failed to read name from client.\n");
         close(clientfd);
         return;
     }
 
-    // now adding the client using addclient
+    // Now adding the client using addclient
     *head = addclient(*head, clientfd, cli_addr.sin_addr, client_name);
     FD_SET(clientfd, all_fds);
 
-    // msg to user who joins
+    // Message to user who joins
     char *wait_msg = "Welcome! You are now awaiting an opponent.\n";
     send(clientfd, wait_msg, strlen(wait_msg), 0);
 
-    // msg to everyone else notifying someone new joined
+    // Message to everyone else notifying someone new joined
     char broadcast_msg[200];
     sprintf(broadcast_msg, "%s has entered the arena.\n", client_name);
     broadcast_except(*head, broadcast_msg, clientfd);
 }
-
 
 
 static void broadcast(struct client *top, char *s, int size) {
