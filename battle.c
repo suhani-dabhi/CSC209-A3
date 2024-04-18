@@ -30,6 +30,8 @@ struct client {
     char name[100];   // keep the client's name
     int in_game;      // 0 if waiting for a game, 1 if in a game
     struct client *last_opponent; // pointer to their last opponent
+    int hitpoints;
+    int powermoves;
 };
 
 
@@ -44,28 +46,33 @@ static void broadcast_except(struct client *client_list, char *msg, int except_f
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds);
 void attempt_matchmaking(struct client **head);
 
+void start_game(struct client *p1, struct client *p2);
+
 int bindandlisten(void);
 
 void attempt_matchmaking(struct client **head) {
     struct client *p, *q;
 
     for (p = *head; p != NULL; p = p->next) {
-        if (!p->in_game && (p->last_opponent == NULL || (q != p->last_opponent && q->last_opponent != p))) {
-            for (q = *head; q != NULL; q = q->next) {
-                if (!q->in_game && q != p && p->last_opponent != q && q->last_opponent != p) {
-                    // init the  match
-                    p->in_game = 1;
-                    q->in_game = 1;
-                    q->last_opponent = p;
-                    p->last_opponent = q;
-                    send(p->fd, "match found! You are now playing against ", 44, 0);
-                    send(p->fd, q->name, strlen(q->name), 0);
-                    send(q->fd, "match found! You are now playing against ", 44, 0);
-                    send(q->fd, p->name, strlen(p->name), 0);
-                    break; // break the inner loop
-                }
+        for (q = *head; q != NULL; q = q->next) {
+            if (!p->in_game && p != q && !q->in_game && p->last_opponent != q && q->last_opponent != p) {
+                // init the match
+                p->in_game = 1;
+                q->in_game = 1;
+                p->last_opponent = q;
+                q->last_opponent = p;
+
+                // notify players of the match
+                char match_msg[512];
+                sprintf(match_msg, "match found! You are now playing against %s\n", q->name);
+                send(p->fd, match_msg, strlen(match_msg), 0);
+                sprintf(match_msg, "match found! You are now playing against %s\n", p->name);
+                send(q->fd, match_msg, strlen(match_msg), 0);
+
+                // start game between the two clients
+                start_game(p, q);
+                return; // end the matchmaking, match has been made
             }
-            if (p->in_game) break; // Break the outer loop if a match was found
         }
     }
 }
@@ -79,6 +86,26 @@ void broadcast_except(struct client *client_list, char *msg, int except_fd) {
         }
         tmp = tmp->next;
     }
+}
+
+void start_game(struct client *p1, struct client *p2) {
+    // init game state
+    p1->hitpoints = 20;
+    p2->hitpoints = 20;
+    p1->powermoves = 3;  // make random
+    p2->powermoves = 3;  // make random
+
+    // notify players that a game started
+    char buffer[512];
+    snprintf(buffer, sizeof(buffer), "You engage %s!\nYour hitpoints: %d\nYour powermoves: %d\n",
+             p2->name, p1->hitpoints, p1->powermoves);
+    send(p1->fd, buffer, strlen(buffer), 0);
+
+    snprintf(buffer, sizeof(buffer), "You engage %s!\nYour hitpoints: %d\nYour powermoves: %d\n",
+             p1->name, p2->hitpoints, p2->powermoves);
+    send(p2->fd, buffer, strlen(buffer), 0);
+
+    // rest of the game logic
 }
 
 int main(void) {
