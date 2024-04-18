@@ -48,8 +48,9 @@ static void broadcast_except(struct client *client_list, char *msg, int except_f
 void powermove(struct client *p1, struct client *p2);
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds);
 void attempt_matchmaking(struct client **head);
-
+char get_move(struct client *current_player);
 void start_game(struct client *p1, struct client *p2);
+void send_status(struct client *player);
 
 int bindandlisten(void);
 
@@ -98,6 +99,14 @@ void start_game(struct client *p1, struct client *p2) {
     p1->powermoves = 3;  // make random
     p2->powermoves = 3;  // make random
 
+    p1->turn = rand() % 2;
+
+    if (p1->turn == 1){
+    p2->turn = 0;}
+    else{
+    p2->turn= 1;
+    }
+
     // notify players that a game started
     char buffer[512];
     snprintf(buffer, sizeof(buffer), "You engage %s!\nYour hitpoints: %d\nYour powermoves: %d\n",
@@ -109,8 +118,78 @@ void start_game(struct client *p1, struct client *p2) {
     send(p2->fd, buffer, strlen(buffer), 0);
 
     // rest of the game logic
+        while (p1->hitpoints > 0 && p2->hitpoints > 0) {
+            struct client *current_player = p1->turn ? p1 : p2;
+            struct client *opponent = p1->turn ? p2 : p1;
+
+            // Prompt current player for their move
+            char move = get_move(current_player); // Implement get_move
+
+            // If move is valid, execute it
+            if (move == 'a') {
+                // attack
+                return;
+
+            } else if (move == 'p') {
+            powermove(current_player, opponent);
+
+            }
+            // check if the game ended or not
+            if (opponent->hitpoints <= 0) {
+                //end_game(current_player, opponent);
+                break;
+            }
+
+            // Send status updates to both players
+            send_status(p1);
+            send_status(p2);
+        }
 }
 
+void send_status(struct client *player) {
+    char status[256];
+
+    // Construct the status message
+    snprintf(status, sizeof(status),
+             "It's %s your turn!\nYour hitpoints: %d\nYour powermoves: %d\n",
+             (player->turn ? "" : "not"), // This adds "not" if it's not the player's turn.
+             player->hitpoints,
+             player->powermoves);
+
+    // Send the status message to the player
+    if (send(player->fd, status, strlen(status), 0) == -1) {
+        perror("send status error");
+        // Consider how you want to handle send errors
+    }
+}
+
+char get_move(struct client *current_player) {
+    char move;
+    char buffer[256];
+    int len;
+
+    // ask client for move
+    char *prompt = "(a)ttack\n(p)owermove\n(s)peak something\n";
+    send(current_player->fd, prompt, strlen(prompt), 0);
+
+    // raed the move from the client
+    len = read(current_player->fd, &move, sizeof(move));
+    if (len > 0) {
+
+        if (move == 'a' || move == 'p' || move == 's') {
+            return move; // valid move
+        } else { //invalid move
+            return 'i';
+        }
+    } else if (len == 0) {
+        // the client disconnected
+        return 'd';
+    } else {
+        // An error occurred
+        perror("read from client");
+        return 'e'; // Error
+    }
+}
 int main(void) {
     int clientfd, maxfd, nready;
     struct client *p;
@@ -313,8 +392,8 @@ void powermove(struct client *p1, struct client *p2) {
                        sprintf(buffer, "Your opponent missed you with their powermove!\n");
                        write(p2->fd, buffer, strlen(buffer));
                 }
-                p1->turn = 0;
-                p2->turn = 1;
+                p1->turn = !p1->turn;
+                p2->turn = !p2->turn;
 
                 }
 }
