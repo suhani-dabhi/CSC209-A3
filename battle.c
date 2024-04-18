@@ -46,6 +46,7 @@ static void broadcast(struct client *top, char *s, int size);
 int handleclient(struct client *p, struct client *top);
 static void broadcast_except(struct client *client_list, char *msg, int except_fd);
 void powermove(struct client *p1, struct client *p2);
+void attack(struct client *p1, struct client *p2);
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds);
 void attempt_matchmaking(struct client **head);
 char get_move(struct client *current_player);
@@ -398,6 +399,24 @@ void powermove(struct client *p1, struct client *p2) {
                 }
 }
 
+// p1 attacks p2
+void attack(struct client *p1, struct client *p2) {
+        char buffer[256];
+        srand(time(NULL));
+        int power = (rand() % 5) + 2; // chooses a random number between 2 to 6
+        p2->hitpoints -= power;
+        sprintf(buffer, "You hit your opponent with a damage of %d points \n", power);
+        write(p1->fd, buffer, strlen(buffer));
+
+        sprintf(buffer, "Your opponent hit you with damage of %d points \n", power);
+        write(p2->fd, buffer, strlen(buffer));
+
+        p1->turn = !p1->turn;
+        p2->turn = !p2->turn;
+
+
+
+}
 
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds) {
     struct sockaddr_in cli_addr;
