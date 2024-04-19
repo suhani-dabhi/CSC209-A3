@@ -34,6 +34,7 @@ struct client {
     int hitpoints;
     int powermoves;
     int turn; // 1 if their turn, 0 otherwise
+    int mute; // 1 if the client is muted, 0 otherwise
 };
 
 
@@ -46,6 +47,8 @@ static void broadcast(struct client *top, char *s, int size);
 int handleclient(struct client *p, struct client *top);
 static void broadcast_except(struct client *client_list, char *msg, int except_fd);
 void powermove(struct client *p1, struct client *p2);
+void speak(struct client *p1, struct client *p2);
+void mute(struct client *p1);
 void attack(struct client *p1, struct client *p2);
 void handle_new_connection(int listenfd, struct client **head, fd_set *all_fds);
 void attempt_matchmaking(struct client **head);
@@ -96,6 +99,8 @@ void broadcast_except(struct client *client_list, char *msg, int except_fd) {
 
 void start_game(struct client *p1, struct client *p2) {
     // init game state
+    p1->mute = 0;
+    p2->mute = 0;
     p1->hitpoints = 20;
     p2->hitpoints = 20;
     p1->powermoves = 3;  // make random
@@ -138,6 +143,14 @@ void start_game(struct client *p1, struct client *p2) {
             powermove(current_player, opponent);
 
 
+            } else if (move == 's') {
+                // send a message to the opponent
+                speak(current_player, opponent);
+            
+            } else if (move == 'm'){
+                // mute the opponent
+                mute(current_player);
+
             } else if (move == 'i') {
             char move = get_move(current_player); // not tested yet
             }
@@ -149,6 +162,38 @@ void start_game(struct client *p1, struct client *p2) {
 
 
         }
+}
+
+void mute(struct client *p1){
+    char muted_msg[256];
+    sprintf(muted_msg, "\nYou have muted your opponent, their messages will no longer reach you.\n");
+    write(p1->fd, muted_msg, strlen(muted_msg));
+    p1->mute = 1;
+}
+
+void speak(struct client *p1, struct client *p2){
+    char chat_msg[512];
+    char prompt_buffer[256];
+    char incoming_msg[256];
+    sprintf(prompt_buffer, "\nSay Something:\n");
+    write(p1->fd, prompt_buffer, strlen(prompt_buffer));
+
+    //char client_name[100];
+    memset(chat_msg, 0, sizeof(chat_msg));  // Clear the buffer
+    int name_len = 0;
+    char ch;
+    while (read(p1->fd, &ch, 1) > 0 && ch != '\n' && name_len < sizeof(chat_msg) - 1) {
+        chat_msg[name_len++] = ch;
+    }
+    chat_msg[name_len] = '\0';  // Null-terminate the string
+    
+    // If the opponent has not muted send message
+    if(!p2->mute){
+        sprintf(incoming_msg, "Your opponent says:\n");
+        write(p2->fd, incoming_msg, strlen(incoming_msg));
+        write(p2->fd, chat_msg, strlen(chat_msg));
+    }
+    return;
 }
 
 void end_game(struct client *winner, struct client *loser) {
@@ -200,14 +245,14 @@ char get_move(struct client *current_player) {
     int len;
 
     // ask client for move
-    char *prompt = "\n(a)ttack\n(p)owermove\n(s)peak something\n";
+    char *prompt = "\n(a)ttack\n(p)owermove\n(s)peak something\n(m)ute\n";
     send(current_player->fd, prompt, strlen(prompt), 0);
 
     // raed the move from the client
     len = read(current_player->fd, &move, sizeof(move));
     if (len > 0) {
 
-        if (move == 'a' || move == 'p' || move == 's') {
+        if (move == 'a' || move == 'p' || move == 's' || move == 'm') {
             return move; // valid move
         } else { //invalid move
             return 'i';
